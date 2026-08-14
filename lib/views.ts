@@ -119,9 +119,9 @@ export function buildHomeView(state: HomeState, data: SheetData) {
     {
       type: 'actions',
       elements: [
-        btn('◀', `nav:${shift(state, -1)}`),
-        btn('오늘', `nav:${today}`),
-        btn('▶', `nav:${shift(state, 1)}`),
+        btn('◀', 'nav_prev', shift(state, -1)),
+        btn('오늘', 'nav_today', today),
+        btn('▶', 'nav_next', shift(state, 1)),
         modeSelect(state.mode),
         typeSelect(state.type),
       ],
@@ -155,7 +155,7 @@ export function buildHomeView(state: HomeState, data: SheetData) {
     type: 'actions',
     elements: [
       { ...btn('＋ 일정 추가', 'open_add'), style: 'primary' },
-      btn('🔄 새로고침', `nav:${state.anchor}`),
+      btn('🔄 새로고침', 'nav_refresh', state.anchor),
     ],
   }, {
     type: 'context',
@@ -246,11 +246,18 @@ export function buildAddModal(state: HomeState) {
 
 /* ─────────── 헬퍼 ─────────── */
 
-function btn(label: string, action_id: string) {
+/**
+ * action_id 는 반드시 고정값이어야 한다.
+ * 날짜를 action_id 에 넣으면 "오늘"과 "▶"가 같은 값이 되는 순간
+ * 슬랙이 중복 id 로 보고 views.publish 를 invalid_arguments 로 거부한다.
+ * 가변 데이터는 전부 value 로 넘긴다.
+ */
+function btn(label: string, action_id: string, value?: string) {
   return {
     type: 'button',
     text: { type: 'plain_text', text: label, emoji: true },
     action_id,
+    ...(value !== undefined ? { value } : {}),
   };
 }
 

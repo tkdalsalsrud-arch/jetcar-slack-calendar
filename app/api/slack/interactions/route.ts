@@ -46,7 +46,7 @@ async function handleAction(payload: any) {
   }
 
   const next: HomeState = { ...state };
-  if (id.startsWith('nav:')) next.anchor = id.slice(4);
+  if (id.startsWith('nav_')) next.anchor = action.value;
   if (id === 'filter_mode') next.mode = action.selected_option.value as Mode;
   if (id === 'filter_type') next.type = action.selected_option.value;
 
