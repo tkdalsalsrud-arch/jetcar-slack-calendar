@@ -1,4 +1,5 @@
 import type { ScheduleRow, VacationRow, SheetData } from './sheets';
+import { calendarImageUrl } from './sign';
 
 /* ─────────── 업무 구분 ─────────── */
 
@@ -127,6 +128,19 @@ export function buildHomeView(state: HomeState, data: SheetData) {
       ],
     },
   ];
+
+  // 주간·월간에는 상단에 렌더링된 캘린더 이미지를 얹는다.
+  // 일간은 항목이 적어 이미지가 오히려 군더더기다.
+  if (state.mode !== 'day') {
+    const img = calendarImageUrl(state.mode, state.anchor, state.type);
+    if (img) {
+      blocks.push({
+        type: 'image',
+        image_url: img,
+        alt_text: state.mode === 'month' ? '월간 캘린더' : '주간 캘린더',
+      });
+    }
+  }
 
   const vac = vacationLine(data.vacations, from, to);
   if (vac) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: vac }] });
