@@ -2,33 +2,41 @@ import { ImageResponse } from 'next/og';
 import { fetchAll, type ScheduleRow, type VacationRow } from '@/lib/sheets';
 import { loadFonts } from '@/lib/font';
 import { canonical, verify } from '@/lib/sign';
-import { rangeOf, todaySeoul, type HomeState, type Mode } from '@/lib/views';
+import { TYPES, VACATION_COLORS, rangeOf, todaySeoul, type HomeState, type Mode } from '@/lib/views';
 
-export const runtime = 'nodejs'; // google-auth-library 와 next/og 를 함께 쓴다
+export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/* 슬랙은 라이트/다크 테마를 구분해 알려주지 않는다.
-   어느 쪽에서도 카드처럼 보이도록 밝은 배경 한 벌로 간다. */
-const C = {
+/**
+ * 웹앱(Apps Script)의 격자 캘린더를 PNG 로 재현한다.
+ * 색상·분류·카드 구성은 index.html 의 CSS 를 그대로 따랐다.
+ *
+ * 슬랙 홈 탭 표시 폭은 약 700px 이라 7열이면 칸당 100px 남짓이다.
+ * 그래서 크게 그려두고, 인라인에서는 축소되어 흐름만 보이되
+ * 클릭하면 원본 해상도 뷰어가 열려 글자를 읽을 수 있게 한다.
+ */
+
+const UI = {
   bg: '#FFFFFF',
-  line: '#E5E3DD',
-  head: '#F7F6F3',
-  text: '#1F1E1C',
-  sub: '#6B6A65',
-  faint: '#A3A29C',
-  out: '#185FA5',
-  outBg: '#E6F1FB',
-  ret: '#0F6E56',
-  retBg: '#E1F5EE',
-  today: '#FAEEDA',
-  todayLine: '#BA7517',
-  sat: '#378ADD',
-  sun: '#E24B4A',
+  cellBorder: '#E5E7EB',
+  cellBg: '#FFFFFF',
+  outBg: '#F9FAFB',
+  today: '#111827',
+  tomorrow: '#22C55E',
+  dayNum: '#4B5563',
+  catTitle: '#6B7280',
+  agency: '#FEF08A',
+  head: '#1F2937',
+  sub: '#6B7280',
 };
+
+const SUN = '#DC2626';
+const SAT = '#2563EB';
+const WD = ['일', '월', '화', '수', '목', '금', '토'];
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const mode = (url.searchParams.get('mode') ?? 'week') as Mode;
+  const mode = (url.searchParams.get('mode') ?? 'month') as Mode;
   const anchor = url.searchParams.get('anchor') ?? todaySeoul();
   const type = url.searchParams.get('type') ?? '전체';
 
@@ -37,37 +45,318 @@ export async function GET(req: Request) {
   }
 
   const state: HomeState = { mode, anchor, type };
+  const [from, to] = rangeOf(state);
   const data = await fetchAll();
 
-  const rows = data.schedules
-    .filter((e) => type === '전체' || e.type === type)
-    .filter((e) => {
-      const [f, t] = rangeOf(state);
-      return e.date >= f && e.date <= t;
-    });
+  const schedules = data.schedules
+    .filter((e) => e.date >= from && e.date <= to)
+    .filter((e) => type === '전체' || e.type === type);
+  const vacations = data.vacations.filter((v) => v.date >= from && v.date <= to);
 
-  const tree = mode === 'month' ? monthGrid(state, rows, data.vacations) : weekTable(state, rows, data.vacations);
+  const built = build(state, schedules, vacations);
 
-  return new ImageResponse(tree.node, {
-    width: tree.width,
-    height: tree.height,
-    fonts: await loadFonts(tree.texts),
+  return new ImageResponse(built.node, {
+    width: built.width,
+    height: built.height,
+    fonts: await loadFonts(built.texts),
     headers: { 'Cache-Control': 'public, max-age=0, s-maxage=30' },
   });
 }
 
-/* ─────────── 공통 ─────────── */
+/* ─────────── 치수 ─────────── */
 
-const isOut = (e: ScheduleRow) => e.type.endsWith('-out');
+const COL = 220;
+const PAD = 10;
+const GAP = 4;
+const HEADER = 56;
+const WDBAR = 26;
 
-function byDate<T extends { date: string }>(items: T[]) {
-  const m = new Map<string, T[]>();
-  for (const i of items) {
-    if (!m.has(i.date)) m.set(i.date, []);
-    m.get(i.date)!.push(i);
-  }
-  return m;
+const L1 = 17; // 차량번호 줄
+const L2 = 16; // 부가 정보 줄
+const CARD_PAD = 8;
+const CARD_GAP = 3;
+const CAT_TITLE = 16;
+
+type Card = { row: ScheduleRow; lines: string[] };
+
+function cardLines(e: ScheduleRow, detailed: boolean): string[] {
+  const out: string[] = [];
+  if (e.customerName) out.push(clip(e.customerName, detailed ? 44 : 26));
+  if (e.completionDate) out.push(e.completionDate);
+  if (e.agencyContract) out.push(clip(e.agencyContract, detailed ? 40 : 24));
+  if (detailed && e.memo) out.push(clip(e.memo.replace(/\n/g, ' '), 44));
+  return out;
 }
+
+const cardHeight = (lines: string[]) => CARD_PAD + L1 + lines.length * L2 + CARD_GAP;
+
+function clip(s: string, n: number) {
+  const t = s.trim();
+  return t.length <= n ? t : t.slice(0, n) + '…';
+}
+
+/* ─────────── 렌더 ─────────── */
+
+function build(state: HomeState, schedules: ScheduleRow[], vacations: VacationRow[]) {
+  const [from, to] = rangeOf(state);
+  const today = todaySeoul();
+  const detailed = state.mode === 'week'; // 주간은 칸이 넉넉하니 메모까지 노출
+
+  // 주 단위로 쪼갠다. 월간이면 앞뒤 빈칸을 채워 7의 배수로 맞춘다.
+  const days: (string | null)[] = [];
+  if (state.mode === 'week') {
+    for (const d of eachDay(from, to)) days.push(d);
+  } else {
+    for (let i = 0; i < dow(from); i++) days.push(null);
+    for (const d of eachDay(from, to)) days.push(d);
+    while (days.length % 7 !== 0) days.push(null);
+  }
+
+  const sMap = groupBy(schedules, (e) => e.date);
+  const vMap = groupBy(vacations, (v) => v.date);
+  const texts: string[] = [];
+
+  // 칸 내용과 높이를 먼저 계산해야 이미지 전체 높이가 나온다
+  const cells = days.map((d) => {
+    if (!d) return { d: null as string | null, cats: [] as { t: (typeof TYPES)[number]; list: Card[] }[], vacs: [] as VacationRow[], h: 90 };
+
+    const items = sMap.get(d) ?? [];
+    const cats = TYPES.map((t) => ({
+      t,
+      list: items.filter((e) => e.type === t.key).map<Card>((row) => ({ row, lines: cardLines(row, detailed) })),
+    })).filter((c) => c.list.length > 0);
+
+    const vacs = vMap.get(d) ?? [];
+
+    let h = 24 + PAD;
+    for (const c of cats) {
+      h += CAT_TITLE;
+      for (const card of c.list) h += cardHeight(card.lines);
+      texts.push(c.t.label);
+      for (const card of c.list) {
+        texts.push(card.row.vehicleNumber, ...card.lines);
+        if (card.row.isReady) texts.push('완료');
+      }
+    }
+    if (vacs.length) {
+      h += CAT_TITLE + vacs.length * (CARD_PAD + L1 + CARD_GAP);
+      texts.push('휴가');
+      for (const v of vacs) texts.push(`${v.employeeName} ${v.vacationType}`);
+    }
+    return { d, cats, vacs, h: Math.max(h, 90) };
+  });
+
+  // 한 주의 높이 = 그 주에서 가장 높은 칸
+  const weeks: number[] = [];
+  for (let i = 0; i < cells.length; i += 7) {
+    weeks.push(Math.max(...cells.slice(i, i + 7).map((c) => c.h)));
+  }
+
+  const W = PAD * 2 + (COL + 2) * 7 + GAP * 6; // +2 는 칸 테두리
+  const H = HEADER + WDBAR + weeks.reduce((a, b) => a + b + GAP, 0) + PAD;
+
+  const title =
+    state.mode === 'week'
+      ? `${from.slice(0, 4)}년 ${Number(from.slice(5, 7))}월 ${Number(from.slice(8))}일 ~ ${Number(to.slice(5, 7))}월 ${Number(to.slice(8))}일`
+      : `${from.slice(0, 4)}년 ${Number(from.slice(5, 7))}월`;
+
+  // 웹앱 헤더와 같은 집계 방식
+  const cnt = (key: string, agency: boolean) =>
+    schedules.filter((e) => e.type === key && !!e.agencyContract.trim() === agency).length;
+  const ltD = cnt('long-term-out', false);
+  const ltA = cnt('long-term-out', true);
+  const afD = cnt('affiliate-out', false);
+  const afA = cnt('affiliate-out', true);
+  const summary = `장기출고 ${ltD + ltA}건 (제트카 ${ltD} / 에이전시 ${ltA})   ·   제휴사출고 ${afD + afA}건 (제트카 ${afD} / 에이전시 ${afA})`;
+  texts.push(title, summary, ...WD);
+
+  const node = (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: W,
+        height: H,
+        background: UI.bg,
+        fontFamily: 'NotoKR',
+        padding: `0 ${PAD}px ${PAD}px`,
+      }}
+    >
+      <div style={{ display: 'flex', height: HEADER, alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', fontSize: 24, fontWeight: 700, color: UI.head }}>{title}</div>
+        <div style={{ display: 'flex', fontSize: 14, color: UI.sub }}>{summary}</div>
+      </div>
+
+      <div style={{ display: 'flex', height: WDBAR }}>
+        {WD.map((w, i) => (
+          <div
+            key={w}
+            style={{
+              display: 'flex',
+              width: COL + 2,
+              flexShrink: 0,
+              marginRight: i < 6 ? GAP : 0,
+              justifyContent: 'center',
+              fontSize: 14,
+              fontWeight: 500,
+              color: i === 0 ? SUN : i === 6 ? SAT : UI.sub,
+            }}
+          >
+            {w}
+          </div>
+        ))}
+      </div>
+
+      {weeks.map((wh, wi) => (
+        <div key={wi} style={{ display: 'flex', height: wh, marginBottom: GAP }}>
+          {cells.slice(wi * 7, wi * 7 + 7).map((c, di) => {
+            const isToday = c.d === today;
+            const isTomorrow = c.d === addDays(today, 1);
+            const accent = isToday ? UI.today : isTomorrow ? UI.tomorrow : null;
+
+            return (
+              <div
+                key={di}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  width: COL,
+                  flexShrink: 0,
+                  height: wh,
+                  marginRight: di < 6 ? GAP : 0,
+                  border: `1px solid ${UI.cellBorder}`,
+                  ...(accent ? { boxShadow: `inset 0 0 0 3px ${accent}` } : {}),
+                  borderRadius: 6,
+                  background: c.d ? UI.cellBg : UI.outBg,
+                  padding: 4,
+                }}
+              >
+                {c.d && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', height: 20 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        fontSize: 14,
+                        fontWeight: 700,
+                        lineHeight: '20px',
+                        borderRadius: 10,
+                        padding: '0 7px',
+                        color: isToday ? '#FFFFFF' : di === 0 ? SUN : di === 6 ? SAT : UI.dayNum,
+                        background: isToday ? UI.today : 'transparent',
+                      }}
+                    >
+                      {Number(c.d.slice(8))}
+                    </div>
+                  </div>
+                )}
+
+                {c.cats.map((cat) => (
+                  <div key={cat.t.key} style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ display: 'flex', fontSize: 11, fontWeight: 700, color: UI.catTitle, height: CAT_TITLE, paddingLeft: 3 }}>
+                      {cat.t.label}
+                    </div>
+                    {cat.list.map((card, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          background: cat.t.color,
+                          borderRadius: 4,
+                          padding: '3px 5px',
+                          marginBottom: CARD_GAP,
+                          opacity: card.row.isReady ? 0.72 : 1,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', height: L1 }}>
+                          <div style={{ display: 'flex', fontSize: 13, fontWeight: 700, color: '#FFFFFF' }}>
+                            {card.row.vehicleNumber}
+                          </div>
+                          {card.row.isReady && (
+                            <div
+                              style={{
+                                display: 'flex',
+                                marginLeft: 4,
+                                background: '#FFFFFF',
+                                color: cat.t.color,
+                                fontSize: 10,
+                                fontWeight: 700,
+                                lineHeight: '14px',
+                                height: 14,
+                                padding: '0 4px',
+                                borderRadius: 3,
+                              }}
+                            >
+                              완료
+                            </div>
+                          )}
+                        </div>
+                        {card.lines.map((ln, j) => (
+                          <div
+                            key={j}
+                            style={{
+                              display: 'flex',
+                              fontSize: 12,
+                              height: L2,
+                              // 에이전시명은 웹앱과 동일하게 노란색 강조
+                              color: ln === card.row.agencyContract ? UI.agency : 'rgba(255,255,255,0.88)',
+                              fontWeight: ln === card.row.agencyContract ? 700 : 400,
+                            }}
+                          >
+                            {ln}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+
+                {c.vacs.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ display: 'flex', fontSize: 11, fontWeight: 700, color: UI.catTitle, height: CAT_TITLE, paddingLeft: 3 }}>
+                      휴가
+                    </div>
+                    {c.vacs.map((v, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          height: L1 + CARD_PAD - CARD_GAP,
+                          background: VACATION_COLORS[v.vacationType] ?? '#a78bfa',
+                          borderRadius: 4,
+                          padding: '0 5px',
+                          marginBottom: CARD_GAP,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            fontSize: 12,
+                            fontWeight: 500,
+                            color:
+                              v.vacationType === '오후반차' || v.vacationType === '훈련(오후)' ? '#111827' : '#FFFFFF',
+                            textDecoration: v.status === 'cancelled' ? 'line-through' : 'none',
+                          }}
+                        >
+                          {v.employeeName} {v.vacationType}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+
+  return { node, width: W, height: H, texts };
+}
+
+/* ─────────── 날짜 유틸 ─────────── */
 
 function eachDay(from: string, to: string): string[] {
   const out: string[] = [];
@@ -80,330 +369,20 @@ function eachDay(from: string, to: string): string[] {
   return out;
 }
 
-const WD = ['일', '월', '화', '수', '목', '금', '토'];
+function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 const dow = (d: string) => new Date(`${d}T12:00:00Z`).getUTCDay();
 
-/** "쏘렌토 116호7147 · 신경철" 형태로 압축. customerName 은 첫 토막만 쓴다. */
-function label(e: ScheduleRow): string {
-  const who = (e.customerName || '').split('/')[1]?.trim() || e.customerName || '';
-  const v = e.vehicleNumber.replace(/\s*,\s*/g, ' ').trim();
-  return who ? `${v} · ${clip(who, 10)}` : v;
-}
-
-function clip(s: string, n: number) {
-  return s.length <= n ? s : s.slice(0, n) + '…';
-}
-
-/* ─────────── 주간: 상세 표 (레이아웃 C) ─────────── */
-
-function weekTable(state: HomeState, rows: ScheduleRow[], vacs: VacationRow[]) {
-  const [from, to] = rangeOf(state);
-  const days = eachDay(from, to);
-  const today = todaySeoul();
-  const map = byDate(rows);
-  const vmap = byDate(vacs.filter((v) => v.date >= from && v.date <= to));
-
-  const W = 1000;
-  const COL = [110, 52, 366, 366, 106];
-  const MAX = 6;
-  const LINE = 27;
-
-  const texts: string[] = [];
-  const bodyRows = days.map((d) => {
-    const items = map.get(d) ?? [];
-    const outs = items.filter(isOut).map(label);
-    const rets = items.filter((e) => !isOut(e)).map(label);
-    const vac = (vmap.get(d) ?? []).map((v) => v.employeeName);
-    texts.push(...outs, ...rets, ...vac);
-    const lines = Math.max(outs.length, rets.length, vac.length, 1);
-    return { d, outs, rets, vac, h: Math.max(Math.min(lines, MAX + 1) * LINE + 20, 54) };
-  });
-
-  const HEAD = 58;
-  const THEAD = 36;
-  const height = HEAD + THEAD + bodyRows.reduce((a, r) => a + r.h, 0);
-
-  const total = rows.length;
-  const outN = rows.filter(isOut).length;
-  const title = `${from.slice(0, 4)}년 ${Number(from.slice(5, 7))}월 ${Number(from.slice(8))}일 ~ ${Number(to.slice(5, 7))}월 ${Number(to.slice(8))}일`;
-  const summary = `출고 ${outN} · 반납 ${total - outN}`;
-  texts.push(title, summary, '날짜', '건', '출고', '반납', '휴가', ...WD);
-
-  const cell = (list: string[], w: number, color: string, bg: string) => (
-    <div style={{ display: 'flex', flexDirection: 'column', width: w, padding: '10px 12px' }}>
-      {list.slice(0, MAX).map((s, i) => (
-        <div
-          key={i}
-          style={{
-            display: 'flex',
-            fontSize: 15,
-            lineHeight: `${LINE}px`,
-            color,
-            ...(i === 0 ? { borderLeft: `3px solid ${bg}`, paddingLeft: 8 } : { paddingLeft: 11 }),
-          }}
-        >
-          {s}
-        </div>
-      ))}
-      {list.length > MAX && (
-        <div style={{ display: 'flex', fontSize: 14, lineHeight: `${LINE}px`, color: C.faint, paddingLeft: 11 }}>
-          외 {list.length - MAX}건
-        </div>
-      )}
-      {list.length === 0 && (
-        <div style={{ display: 'flex', fontSize: 15, lineHeight: `${LINE}px`, color: C.faint, paddingLeft: 11 }}>—</div>
-      )}
-    </div>
-  );
-
-  const node = (
-    <div style={{ display: 'flex', flexDirection: 'column', width: W, height, background: C.bg, fontFamily: 'NotoKR' }}>
-      <div
-        style={{
-          display: 'flex',
-          height: HEAD,
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 20px',
-          borderBottom: `1px solid ${C.line}`,
-        }}
-      >
-        <div style={{ display: 'flex', fontSize: 20, fontWeight: 500, color: C.text }}>{title}</div>
-        <div style={{ display: 'flex', fontSize: 15, color: C.sub }}>{summary}</div>
-      </div>
-
-      <div style={{ display: 'flex', height: THEAD, background: C.head, borderBottom: `1px solid ${C.line}` }}>
-        {['날짜', '건', '출고', '반납', '휴가'].map((h, i) => (
-          <div
-            key={h}
-            style={{
-              display: 'flex',
-              width: COL[i],
-              alignItems: 'center',
-              justifyContent: i === 1 ? 'flex-end' : 'flex-start',
-              padding: '0 12px',
-              fontSize: 14,
-              color: C.sub,
-            }}
-          >
-            {h}
-          </div>
-        ))}
-      </div>
-
-      {bodyRows.map((r) => {
-        const w = dow(r.d);
-        const isToday = r.d === today;
-        return (
-          <div
-            key={r.d}
-            style={{
-              display: 'flex',
-              height: r.h,
-              borderBottom: `1px solid ${C.line}`,
-              background: isToday ? C.today : w === 0 || w === 6 ? C.head : C.bg,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'baseline', width: COL[0], padding: '14px 12px 0 12px' }}>
-              <div style={{ display: 'flex', fontSize: 17, fontWeight: 500, color: C.text }}>{r.d.slice(5).replace('-', '/')}</div>
-              <div
-                style={{
-                  display: 'flex',
-                  marginLeft: 6,
-                  fontSize: 14,
-                  color: w === 0 ? C.sun : w === 6 ? C.sat : C.sub,
-                }}
-              >
-                {WD[w]}
-              </div>
-            </div>
-            <div
-              style={{
-                display: 'flex',
-                width: COL[1],
-                justifyContent: 'flex-end',
-                padding: '14px 12px 0 0',
-                fontSize: 16,
-                color: r.outs.length + r.rets.length ? C.text : C.faint,
-              }}
-            >
-              {r.outs.length + r.rets.length || '0'}
-            </div>
-            {cell(r.outs, COL[2], C.text, C.out)}
-            {cell(r.rets, COL[3], C.text, C.ret)}
-            <div style={{ display: 'flex', flexDirection: 'column', width: COL[4], padding: '10px 12px' }}>
-              {r.vac.slice(0, 4).map((n, i) => (
-                <div key={i} style={{ display: 'flex', fontSize: 14, lineHeight: `${LINE}px`, color: C.sub }}>
-                  {n}
-                </div>
-              ))}
-              {r.vac.length === 0 && (
-                <div style={{ display: 'flex', fontSize: 14, lineHeight: `${LINE}px`, color: C.faint }}>—</div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-
-  return { node, width: W, height, texts };
-}
-
-/* ─────────── 월간: 진짜 7×5 격자 (건수 요약) ─────────── */
-
-function monthGrid(state: HomeState, rows: ScheduleRow[], vacs: VacationRow[]) {
-  const [from, to] = rangeOf(state);
-  const today = todaySeoul();
-  const map = byDate(rows);
-  const vmap = byDate(vacs.filter((v) => v.date >= from && v.date <= to));
-
-  // 1일이 속한 주의 일요일부터 시작해 7칸씩 채운다
-  const lead = dow(from);
-  const start = new Date(`${from}T12:00:00Z`);
-  start.setUTCDate(start.getUTCDate() - lead);
-  const startStr = start.toISOString().slice(0, 10);
-
-  const cells: string[] = [];
-  const d = new Date(`${startStr}T12:00:00Z`);
-  while (cells.length < 42) {
-    cells.push(d.toISOString().slice(0, 10));
-    d.setUTCDate(d.getUTCDate() + 1);
-    if (cells.length % 7 === 0 && cells[cells.length - 1] > to) break;
+function groupBy<T>(arr: T[], key: (t: T) => string) {
+  const m = new Map<string, T[]>();
+  for (const i of arr) {
+    const k = key(i);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k)!.push(i);
   }
-
-  const CW = 140;
-  const CH = 108;
-  const W = CW * 7;
-  const HEAD = 58;
-  const THEAD = 34;
-  const weeks = cells.length / 7;
-  const height = HEAD + THEAD + weeks * CH;
-
-  const total = rows.length;
-  const outN = rows.filter(isOut).length;
-  const title = `${from.slice(0, 4)}년 ${Number(from.slice(5, 7))}월`;
-  const summary = `출고 ${outN} · 반납 ${total - outN}`;
-  const texts = [title, summary, '출고', '반납', '휴가', ...WD];
-
-  const node = (
-    <div style={{ display: 'flex', flexDirection: 'column', width: W, height, background: C.bg, fontFamily: 'NotoKR' }}>
-      <div
-        style={{
-          display: 'flex',
-          height: HEAD,
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 20px',
-          borderBottom: `1px solid ${C.line}`,
-        }}
-      >
-        <div style={{ display: 'flex', fontSize: 20, fontWeight: 500, color: C.text }}>{title}</div>
-        <div style={{ display: 'flex', fontSize: 15, color: C.sub }}>{summary}</div>
-      </div>
-
-      <div style={{ display: 'flex', height: THEAD, background: C.head, borderBottom: `1px solid ${C.line}` }}>
-        {WD.map((w, i) => (
-          <div
-            key={w}
-            style={{
-              display: 'flex',
-              width: CW,
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 14,
-              color: i === 0 ? C.sun : i === 6 ? C.sat : C.sub,
-            }}
-          >
-            {w}
-          </div>
-        ))}
-      </div>
-
-      {Array.from({ length: weeks }, (_, wi) => (
-        <div key={wi} style={{ display: 'flex', height: CH }}>
-          {cells.slice(wi * 7, wi * 7 + 7).map((day, di) => {
-            const inMonth = day >= from && day <= to;
-            const items = map.get(day) ?? [];
-            const o = items.filter(isOut).length;
-            const r = items.length - o;
-            const v = (vmap.get(day) ?? []).length;
-            const isToday = day === today;
-
-            return (
-              <div
-                key={day}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  width: CW,
-                  height: CH,
-                  padding: '8px 10px',
-                  borderRight: `1px solid ${C.line}`,
-                  borderBottom: `1px solid ${C.line}`,
-                  background: isToday ? C.today : C.bg,
-                  ...(isToday ? { borderTop: `2px solid ${C.todayLine}` } : {}),
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    fontSize: 17,
-                    lineHeight: '22px',
-                    fontWeight: 500,
-                    marginBottom: 5,
-                    color: !inMonth ? C.faint : di === 0 ? C.sun : di === 6 ? C.sat : C.text,
-                  }}
-                >
-                  {Number(day.slice(8))}
-                </div>
-
-                {inMonth && o > 0 && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignSelf: 'flex-start',
-                      background: C.outBg,
-                      color: C.out,
-                      fontSize: 14,
-                      lineHeight: '21px',
-                      height: 21,
-                      padding: '0 7px',
-                      borderRadius: 4,
-                      marginBottom: 3,
-                    }}
-                  >
-                    출고 {o}
-                  </div>
-                )}
-                {inMonth && r > 0 && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignSelf: 'flex-start',
-                      background: C.retBg,
-                      color: C.ret,
-                      fontSize: 14,
-                      lineHeight: '21px',
-                      height: 21,
-                      padding: '0 7px',
-                      borderRadius: 4,
-                      marginBottom: 3,
-                    }}
-                  >
-                    반납 {r}
-                  </div>
-                )}
-                {inMonth && v > 0 && (
-                  <div style={{ display: 'flex', fontSize: 13, color: C.faint }}>휴가 {v}</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
-
-  return { node, width: W, height, texts };
+  return m;
 }

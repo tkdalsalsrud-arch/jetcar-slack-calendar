@@ -21,6 +21,8 @@ export type ScheduleRow = {
   customerName: string;
   memo: string;
   completionDate: string;
+  agencyContract: string; // 에이전시명 (장기출고·제휴사출고 전용)
+  isReady: boolean; // 준비완료 체크
 };
 
 export type VacationRow = {
@@ -172,6 +174,8 @@ function parseSchedules(values: string[][]): ScheduleRow[] {
       customerName: g(r, 'customerName'),
       memo: g(r, 'memo'),
       completionDate: g(r, 'completionDate'),
+      agencyContract: g(r, 'agencyContract'),
+      isReady: g(r, 'isReady').toLowerCase() === 'true',
     });
   }
   return out;

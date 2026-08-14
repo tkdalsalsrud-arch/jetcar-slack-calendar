@@ -4,19 +4,32 @@ import { calendarImageUrl } from './sign';
 /* ─────────── 업무 구분 ─────────── */
 
 export const TYPES = [
-  { key: 'long-term-out', label: '장기 출고', icon: ':car:' },
-  { key: 'long-term-return', label: '장기 반납', icon: ':inbox_tray:' },
-  { key: 'monthly-rental-out', label: '월렌트 출고', icon: ':calendar:' },
-  { key: 'monthly-rental-return', label: '월렌트 반납', icon: ':inbox_tray:' },
-  { key: 'affiliate-out', label: '제휴 출고', icon: ':handshake:' },
+  { key: 'long-term-out', label: '장기출고', icon: ':large_blue_square:', color: '#3b82f6' },
+  { key: 'monthly-rental-out', label: '월렌트출고', icon: ':large_green_square:', color: '#10b981' },
+  { key: 'long-term-return', label: '장기반납', icon: ':red_square:', color: '#ef4444' },
+  { key: 'monthly-rental-return', label: '월렌트반납', icon: ':large_orange_square:', color: '#f97316' },
+  { key: 'affiliate-out', label: '제휴사출고', icon: ':large_purple_square:', color: '#8b5cf6' },
+  { key: 'maintenance-out', label: '정비/사고대차', icon: ':large_brown_square:', color: '#0d9488' },
 ] as const;
 
-const TYPE_MAP = new Map<string, { key: string; label: string; icon: string }>(
-  TYPES.map((t) => [t.key, { key: t.key, label: t.label, icon: t.icon }])
+/** 휴가 종류별 색 (웹앱 CSS 와 동일하게 맞춤) */
+export const VACATION_COLORS: Record<string, string> = {
+  연차: '#a78bfa',
+  여름휴가: '#14b8a6',
+  오전반차: '#f472b6',
+  오후반차: '#fbbf24',
+  경조사: '#fb7185',
+  '훈련(오전)': '#f472b6',
+  '훈련(오후)': '#fbbf24',
+  '훈련(종일)': '#65a30d',
+};
+
+const TYPE_MAP = new Map<string, { key: string; label: string; icon: string; color: string }>(
+  TYPES.map((t) => [t.key, { key: t.key, label: t.label, icon: t.icon, color: t.color }])
 );
 
 function typeInfo(key: string) {
-  return TYPE_MAP.get(key) ?? { key, label: key || '기타', icon: ':small_blue_diamond:' };
+  return TYPE_MAP.get(key) ?? { key, label: key || '기타', icon: ':white_square:', color: '#94a3b8' };
 }
 
 /* ─────────── 화면 상태 ─────────── */
