@@ -1,20 +1,22 @@
 /* 웹앱(index.html)의 분류·색상·휴가 종류를 그대로 옮긴 상수 */
 
+// emoji 는 table 블록의 rich_text 셀에서 쓰는 슬랙 이모지 "이름"이다.
+// 웹앱 CSS 의 분류 색상에 가장 가까운 것으로 골랐다.
 export const TYPES = [
-  { key: 'long-term-out', label: '장기출고', icon: '🔵', ready: true },
-  { key: 'monthly-rental-out', label: '월렌트출고', icon: '🟢', ready: true },
-  { key: 'long-term-return', label: '장기반납', icon: '🔴', ready: false },
-  { key: 'monthly-rental-return', label: '월렌트반납', icon: '🟠', ready: false },
-  { key: 'affiliate-out', label: '제휴사출고', icon: '🟣', ready: false },
-  { key: 'maintenance-out', label: '정비/사고대차', icon: '🟦', ready: false },
+  { key: 'long-term-out', label: '장기출고', icon: '🔵', emoji: 'large_blue_circle', ready: true },
+  { key: 'monthly-rental-out', label: '월렌트출고', icon: '🟢', emoji: 'large_green_circle', ready: true },
+  { key: 'long-term-return', label: '장기반납', icon: '🔴', emoji: 'red_circle', ready: false },
+  { key: 'monthly-rental-return', label: '월렌트반납', icon: '🟠', emoji: 'large_orange_circle', ready: false },
+  { key: 'affiliate-out', label: '제휴사출고', icon: '🟣', emoji: 'large_purple_circle', ready: false },
+  { key: 'maintenance-out', label: '정비/사고대차', icon: '🟤', emoji: 'large_brown_circle', ready: false },
 ] as const;
 
-export type TypeInfo = { key: string; label: string; icon: string; ready: boolean };
+export type TypeInfo = { key: string; label: string; icon: string; emoji: string; ready: boolean };
 
 const TYPE_MAP = new Map<string, TypeInfo>(TYPES.map((t) => [t.key, { ...t }]));
 
 export function typeInfo(key: string): TypeInfo {
-  return TYPE_MAP.get(key) ?? { key, label: key || '기타', icon: '⚪', ready: false };
+  return TYPE_MAP.get(key) ?? { key, label: key || '기타', icon: '⚪', emoji: 'white_circle', ready: false };
 }
 
 /** 완료일 입력이 열리는 분류 (웹앱 openMemoModal 과 동일) */

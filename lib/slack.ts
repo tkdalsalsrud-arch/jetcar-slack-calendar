@@ -42,7 +42,21 @@ async function api<T = any>(method: string, payload: unknown): Promise<T> {
   return data as T;
 }
 
-export const publishHome = (user_id: string, view: unknown) => api('views.publish', { user_id, view });
+/**
+ * 홈 탭 렌더링.
+ * table 블록은 비교적 최근에 추가돼 일부 환경에서 거부될 수 있다.
+ * 거부되면 테이블만 빼고 한 번 더 시도해 화면이 아예 안 뜨는 일을 막는다.
+ */
+export async function publishHome(user_id: string, view: any) {
+  try {
+    return await api('views.publish', { user_id, view });
+  } catch (err) {
+    const blocks = (view?.blocks ?? []).filter((b: any) => b.type !== 'table');
+    if (blocks.length === (view?.blocks ?? []).length) throw err;
+    console.warn('[slack] table 블록이 거부됨 — 목록만으로 재시도합니다');
+    return api('views.publish', { user_id, view: { ...view, blocks } });
+  }
+}
 export const openModal = (trigger_id: string, view: unknown) => api('views.open', { trigger_id, view });
 export const pushModal = (trigger_id: string, view: unknown) => api('views.push', { trigger_id, view });
 export const postMessage = (channel: string, blocks: unknown[], text: string) =>

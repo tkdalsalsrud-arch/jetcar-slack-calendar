@@ -1,4 +1,5 @@
 import type { ScheduleRow, VacationRow, SheetData } from './sheets';
+import { buildCalendarTable } from './table';
 import {
   TYPES,
   typeInfo,
@@ -69,6 +70,16 @@ export function buildHomeView(state: HomeState, data: SheetData) {
     });
     blocks.push(...summaryBlock(data.schedules.filter((e) => inRange(e.date, from, to))));
   }
+
+  // 주간·월간에는 실제 7열 격자 테이블을 올린다.
+  // 홈 탭이 table 블록을 거부하면 slack.ts 가 빼고 재시도하므로,
+  // 아래 목록만으로도 화면이 성립해야 한다.
+  const table = buildCalendarTable(
+    state,
+    data.schedules.filter((e) => state.type === '전체' || e.type === state.type),
+    state.view === 'vacation' ? data.vacations : data.vacations
+  );
+  if (table) blocks.push(table);
 
   blocks.push({ type: 'divider' });
 
